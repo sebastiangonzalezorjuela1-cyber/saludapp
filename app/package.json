@@ -1,0 +1,42 @@
+{
+  "name": "saludapp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:paciente": "cross-env VITE_ROL_INICIAL=paciente vite --port 5173",
+    "dev:medico": "cross-env VITE_ROL_INICIAL=medico vite --port 5174",
+    "dev:admin": "cross-env VITE_ROL_INICIAL=admin vite --port 5175",
+    "dev:all": "concurrently -n paciente,medico,admin -c blue,yellow,magenta \"npm:dev:paciente\" \"npm:dev:medico\" \"npm:dev:admin\"",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "@supabase/supabase-js": "^2.112.4",
+    "@vis.gl/react-google-maps": "^1.10.1",
+    "lucide-react": "^1.39.0",
+    "motion": "^13.2.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/google.maps": "^3.66.4",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "oxlint": "^1.79.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}

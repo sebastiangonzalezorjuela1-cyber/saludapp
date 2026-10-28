@@ -1,0 +1,27 @@
+# Dependencias e build
+node_modules
+dist
+dist-ssr
+
+# Variables de entorno / claves (nunca subir)
+.env
+.env.local
+.env.*.local
+*.local
+
+# Configuración local de Claude Code (específica de cada máquina/persona)
+.claude/settings.local.json
+
+# Paquetes de skills de IA vendorizados (se reinstalan con `npx skills add`,
+# no son parte del código del proyecto)
+.claude/skills/
+.agents/skills/
+skills-lock.json
+
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/*
+!.vscode/extensions.json
+.idea

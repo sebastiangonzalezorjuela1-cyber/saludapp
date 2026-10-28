@@ -1,0 +1,17 @@
+{
+  "name": "SaludApp",
+  "short_name": "SaludApp",
+  "description": "Agenda y gestión de citas médicas",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#013b4d",
+  "theme_color": "#013b4d",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
