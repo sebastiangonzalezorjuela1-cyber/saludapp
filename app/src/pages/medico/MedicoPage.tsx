@@ -12,24 +12,41 @@ import {
   UserRound,
   X,
   CalendarX,
+  ClipboardCheck,
+  UserCheck,
+  UserX,
   type LucideIcon,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabaseClient'
-import { useAuth } from '../../lib/AuthContext'
+import { useAuth } from '../../lib/useAuth'
+import { useAhora } from '../../hooks/useAhora'
+import { mensajeDeError } from '../../lib/mensajesError'
+import { AvisoError } from '../../lib/AvisoError'
 import { Encabezado, Pie, Plantas, Portada, TarjetaMetrica } from '../../lib/Plantilla'
-import { ESTADOS_CITA, claveDia, fechaLarga, hora } from '../../lib/citas'
-import type { Cita, Especialidad, Medico, Reporte, Sede, Usuario } from '../../types/domain'
+import { ESTADOS_CITA, claveDia, fechaLarga, hora, inicioDeHoy, proximosDias, textoDia } from '../../lib/citas'
+import type { Cita, Especialidad, Medico, Reporte, Sede, TipoReporte, Usuario } from '../../types/domain'
 
 // Reciclada de la pantalla del conductor. Lo que cambia es qué se gestiona:
 //   antes: elegir unidad, iniciar recorrido, reportar novedad.
 //   ahora: aceptar/rechazar citas y reportar novedad (retraso, no disponible).
 // El panel "¿Qué novedad tienes?" y su envío a `reportes` son los mismos.
 
-// `motivo` es lo que se guarda en el reporte y lee el administrador.
-const OPCIONES_RAPIDAS: { motivo: string; titulo: string; detalle: string; Icono: LucideIcon }[] = [
-  { motivo: 'Retraso de 10 min', titulo: '10 min', detalle: 'de retraso', Icono: Clock },
-  { motivo: 'Retraso de 15 min', titulo: '15 min', detalle: 'de retraso', Icono: Clock },
-  { motivo: 'No disponible hoy', titulo: 'No disponible', detalle: 'hoy', Icono: CalendarX },
+// `motivo` es el texto que lee el administrador; `tipo` y `minutos` son el dato
+// estructurado (como opciones.ts del conductor) con el que se calcula la hora
+// estimada que ve el paciente.
+interface OpcionRapida {
+  motivo: string
+  titulo: string
+  detalle: string
+  tipo: TipoReporte
+  minutos: number | null
+  Icono: LucideIcon
+}
+const OPCIONES_RAPIDAS: OpcionRapida[] = [
+  { motivo: 'Retraso de 10 min', titulo: '10 min', detalle: 'de retraso', tipo: 'retraso', minutos: 10, Icono: Clock },
+  { motivo: 'Retraso de 15 min', titulo: '15 min', detalle: 'de retraso', tipo: 'retraso', minutos: 15, Icono: Clock },
+  { motivo: 'Retraso de 30 min', titulo: '30 min', detalle: 'de retraso', tipo: 'retraso', minutos: 30, Icono: Clock },
+  { motivo: 'No disponible', titulo: 'No disponible', detalle: 'ese día', tipo: 'ausencia', minutos: null, Icono: CalendarX },
 ]
 
 function claseOpcion(seleccionada: boolean) {
@@ -45,6 +62,9 @@ function claseIconoOpcion(seleccionada: boolean) {
     seleccionada ? 'bg-[#2c6672] text-white' : 'bg-slate-100 text-slate-500'
   }`
 }
+
+// Chip de una cita confirmada cuya hora ya pasó y falta cerrar.
+const POR_CERRAR = { etiqueta: 'Por cerrar', chip: 'bg-violet-50 text-violet-800 ring-violet-200', Icono: ClipboardCheck }
 
 const ESTADO_REPORTE: Record<Reporte['estado'], string> = {
   pendiente: 'En revisión',
@@ -64,6 +84,10 @@ export function MedicoPage() {
   const [pacientes, setPacientes] = useState<Map<string, string>>(new Map())
   const [reportes, setReportes] = useState<Reporte[]>([])
   const [cargando, setCargando] = useState(true)
+  // Reloj compartido: las citas pasan a "por cerrar" solas cuando llega su hora.
+  const ahora = useAhora(30_000)
+  const [errorCarga, setErrorCarga] = useState<string | null>(null)
+  const [reintentando, setReintentando] = useState(false)
   const [seleccionadaId, setSeleccionadaId] = useState<string | null>(null)
   const [mensaje, setMensaje] = useState('')
   const [guardando, setGuardando] = useState(false)
@@ -73,18 +97,24 @@ export function MedicoPage() {
   const [mostrarReporte, setMostrarReporte] = useState(false)
   const [tipoNovedad, setTipoNovedad] = useState('')
   const [mostrarInputTexto, setMostrarInputTexto] = useState(false)
+  // Día al que afecta la novedad ("AAAA-MM-DD"); por defecto, hoy.
+  const [fechaNovedad, setFechaNovedad] = useState(() => proximosDias(1)[0])
   const [enviando, setEnviando] = useState(false)
   const [enviado, setEnviado] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const cargar = useCallback(async () => {
     if (!medicoId) return
-    // Desde el inicio del día: las de hoy ya pasadas también cuentan en "Citas hoy".
-    const inicioHoy = new Date(`${claveDia(new Date())}T00:00:00-05:00`).toISOString()
-    const [resMedico, resCitas, resPacientes, resReportes] = await Promise.all([
-      supabase.from('medicos').select('*').eq('id', medicoId).single(),
-      supabase.from('citas').select('*').eq('medico_id', medicoId).gte('inicio', inicioHoy).order('inicio'),
-      supabase.from('usuarios').select('id, nombre, rol').eq('rol', 'paciente'),
+    // Desde el inicio del día (las de hoy ya pasadas cuentan en "Citas hoy"),
+    // más las confirmadas de días anteriores que siguen sin cerrar.
+    const [resMedico, resCitas, resReportes] = await Promise.all([
+      supabase.from('medicos').select('*').eq('id', medicoId).maybeSingle(),
+      supabase
+        .from('citas')
+        .select('*')
+        .eq('medico_id', medicoId)
+        .or(`inicio.gte.${inicioDeHoy()},estado.eq.confirmada`)
+        .order('inicio'),
       supabase
         .from('reportes')
         .select('*')
@@ -92,17 +122,39 @@ export function MedicoPage() {
         .order('creado_en', { ascending: false })
         .limit(5),
     ])
+    const listaCitas = (resCitas.data as Cita[]) ?? []
     const medico = (resMedico.data as Medico) ?? null
-    const [resSede, resEsp] = await Promise.all([
-      medico?.sede_id ? supabase.from('sedes').select('*').eq('id', medico.sede_id).single() : Promise.resolve({ data: null }),
-      medico ? supabase.from('especialidades').select('*').eq('id', medico.especialidad_id).single() : Promise.resolve({ data: null }),
+    // Solo los nombres de SUS pacientes (antes se descargaban todos).
+    const idsPacientes = [...new Set(listaCitas.map((c) => c.paciente_id).filter((id): id is string => !!id))]
+    const [resSede, resEsp, resPacientes] = await Promise.all([
+      medico?.sede_id ? supabase.from('sedes').select('*').eq('id', medico.sede_id).maybeSingle() : Promise.resolve({ data: null, error: null }),
+      medico
+        ? supabase.from('especialidades').select('*').eq('id', medico.especialidad_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      idsPacientes.length
+        ? supabase.from('usuarios').select('id, nombre, rol').in('id', idsPacientes)
+        : Promise.resolve({ data: [], error: null }),
     ])
+    const fallo = resMedico.error ?? resCitas.error ?? resReportes.error ?? resSede.error ?? resEsp.error ?? resPacientes.error
+    if (fallo) {
+      // Se conservan los datos anteriores y se avisa.
+      setErrorCarga(mensajeDeError(fallo))
+      setCargando(false)
+      return
+    }
+    setErrorCarga(null)
     setPerfil({ medico, sede: (resSede.data as Sede) ?? null, especialidad: (resEsp.data as Especialidad) ?? null })
-    setCitas((resCitas.data as Cita[]) ?? [])
+    setCitas(listaCitas)
     setPacientes(new Map(((resPacientes.data as Usuario[]) ?? []).map((u) => [u.id, u.nombre])))
     setReportes((resReportes.data as Reporte[]) ?? [])
     setCargando(false)
   }, [medicoId])
+
+  async function reintentar() {
+    setReintentando(true)
+    await cargar()
+    setReintentando(false)
+  }
 
   useEffect(() => {
     void cargar()
@@ -126,32 +178,50 @@ export function MedicoPage() {
   }, [medicoId, cargar])
 
   const asignadas = useMemo(() => citas.filter((c) => c.estado !== 'disponible' && c.estado !== 'cancelada'), [citas])
-  const hoy = claveDia(new Date())
+  const hoy = claveDia(new Date(ahora))
+  // Confirmada cuya hora ya llegó: falta marcarla como atendida o no asistió.
+  const porCerrar = useCallback((c: Cita) => c.estado === 'confirmada' && Date.parse(c.inicio) <= ahora, [ahora])
   const conteos = {
     hoy: asignadas.filter((c) => claveDia(c.inicio) === hoy).length,
     pendientes: asignadas.filter((c) => c.estado === 'pendiente').length,
-    confirmadas: asignadas.filter((c) => c.estado === 'confirmada').length,
+    confirmadas: asignadas.filter((c) => c.estado === 'confirmada' && !porCerrar(c)).length,
+    porCerrar: asignadas.filter(porCerrar).length,
     libres: citas.filter((c) => c.estado === 'disponible').length,
   }
-  // Pendientes arriba: son las que piden una decisión.
-  const lista = useMemo(
-    () =>
-      asignadas
-        .filter((c) => Date.parse(c.inicio) > Date.now() - 60 * 60 * 1000)
-        .sort((a, b) =>
-          a.estado === b.estado
-            ? Date.parse(a.inicio) - Date.parse(b.inicio)
-            : a.estado === 'pendiente'
-              ? -1
-              : b.estado === 'pendiente'
-                ? 1
-                : Date.parse(a.inicio) - Date.parse(b.inicio),
-        ),
-    [asignadas],
-  )
+  // Primero lo que pide una acción: solicitudes pendientes y citas por cerrar.
+  // Luego las próximas por hora. Las cerradas de hoy no se listan.
+  const lista = useMemo(() => {
+    const prioridad = (c: Cita) => (c.estado === 'pendiente' ? 0 : porCerrar(c) ? 1 : 2)
+    return asignadas
+      .filter((c) => porCerrar(c) || Date.parse(c.inicio) > ahora - 60 * 60 * 1000)
+      .filter((c) => c.estado !== 'atendida' && c.estado !== 'no_asistio')
+      .sort((a, b) => prioridad(a) - prioridad(b) || Date.parse(a.inicio) - Date.parse(b.inicio))
+  }, [asignadas, porCerrar, ahora])
   const seleccionada = lista.find((c) => c.id === seleccionadaId) ?? lista[0] ?? null
 
-  async function responder(cita: Cita, estado: 'confirmada' | 'rechazada', texto?: string) {
+  async function cerrar(cita: Cita, resultado: 'atendida' | 'no_asistio') {
+    setGuardando(true)
+    setErrorCita(null)
+    const { error: errorRpc } = await supabase.rpc('cerrar_cita', { p_cita: cita.id, p_resultado: resultado })
+    setGuardando(false)
+    if (errorRpc) {
+      setErrorCita(mensajeDeError(errorRpc))
+      return
+    }
+    setSeleccionadaId(null)
+    void cargar()
+  }
+
+  // rechazada: solo pendientes; el horario vuelve a ofrecerse.
+  // cancelada: solo confirmadas; el horario NO se reabre (el médico no puede atender).
+  async function responder(cita: Cita, estado: 'confirmada' | 'rechazada' | 'cancelada', texto?: string) {
+    if (estado === 'cancelada') {
+      const paciente = (cita.paciente_id && pacientes.get(cita.paciente_id)) || 'el paciente'
+      const seguro = window.confirm(
+        `¿Cancelar la cita confirmada con ${paciente} del ${fechaLarga(cita.inicio)} a las ${hora(cita.inicio)}?\n\nEl paciente lo verá al instante y ese horario no se volverá a ofrecer.`,
+      )
+      if (!seguro) return
+    }
     setGuardando(true)
     setErrorCita(null)
     const { error: errorRpc } = await supabase.rpc('responder_cita', {
@@ -161,7 +231,7 @@ export function MedicoPage() {
     })
     setGuardando(false)
     if (errorRpc) {
-      setErrorCita(errorRpc.message)
+      setErrorCita(mensajeDeError(errorRpc))
       return
     }
     setMensaje('')
@@ -177,11 +247,14 @@ export function MedicoPage() {
     setMostrarReporte(false)
     setTipoNovedad('')
     setMostrarInputTexto(false)
+    setFechaNovedad(proximosDias(1)[0])
     setError(null)
   }
 
   async function reportarNovedad() {
     if (!medicoId || !tipoNovedad.trim()) return
+    // Opción rápida → dato estructurado; texto libre → tipo "otro".
+    const opcion = mostrarInputTexto ? undefined : OPCIONES_RAPIDAS.find((o) => o.motivo === tipoNovedad)
     setEnviando(true)
     setError(null)
     setEnviado(false)
@@ -189,10 +262,13 @@ export function MedicoPage() {
       medico_id: medicoId,
       motivo: tipoNovedad.trim(),
       estado: 'pendiente',
+      tipo: opcion?.tipo ?? 'otro',
+      minutos_retraso: opcion?.minutos ?? null,
+      fecha_afectada: fechaNovedad,
     })
     setEnviando(false)
     if (insertError) {
-      setError(insertError.message)
+      setError(mensajeDeError(insertError))
       return
     }
     cerrarModalReporte()
@@ -218,13 +294,27 @@ export function MedicoPage() {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <TarjetaMetrica etiqueta="Citas hoy" valor={conteos.hoy} Icono={CalendarDays} tono="azul" />
             <TarjetaMetrica etiqueta="Pendientes" valor={conteos.pendientes} Icono={Clock} tono="ambar" />
-            <TarjetaMetrica etiqueta="Confirmadas" valor={conteos.confirmadas} Icono={CircleCheck} tono="verde" />
+            <TarjetaMetrica
+              etiqueta="Confirmadas"
+              valor={conteos.confirmadas}
+              Icono={CircleCheck}
+              tono="verde"
+              nota={conteos.porCerrar > 0 ? `${conteos.porCerrar} por cerrar` : undefined}
+            />
             <TarjetaMetrica etiqueta="Horarios libres" valor={conteos.libres} Icono={CalendarClock} tono="teal" nota="Próximos 14 días" />
           </div>
 
+          {errorCarga && (
+            <AvisoError
+              titulo={perfil.medico ? 'No se pudieron actualizar tus citas' : 'No se pudieron cargar tus citas'}
+              detalle={perfil.medico ? `${errorCarga} Lo que ves puede estar desactualizado.` : errorCarga}
+              onReintentar={reintentar}
+              reintentando={reintentando}
+            />
+          )}
           {cargando ? (
             <p className="text-sm text-slate-500">Cargando tus citas…</p>
-          ) : (
+          ) : errorCarga && !perfil.medico ? null : (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
               <section className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200 lg:col-span-3">
                 <h2 className="mb-4 flex items-center gap-2 font-semibold text-slate-900">
@@ -235,7 +325,7 @@ export function MedicoPage() {
                 ) : (
                   <ul className="space-y-2">
                     {lista.map((c) => {
-                      const { etiqueta, chip, Icono } = ESTADOS_CITA[c.estado]
+                      const { etiqueta, chip, Icono } = porCerrar(c) ? POR_CERRAR : ESTADOS_CITA[c.estado]
                       const activa = seleccionada?.id === c.id
                       return (
                         <li
@@ -319,7 +409,29 @@ export function MedicoPage() {
                       className="w-full resize-none rounded-xl border border-slate-300 p-2.5 text-sm outline-none focus:border-[#2c6672]"
                     />
                     {errorCita && <p className="text-sm text-red-600">{errorCita}</p>}
-                    {(seleccionada.estado === 'pendiente' || seleccionada.estado === 'confirmada') && (
+                    {porCerrar(seleccionada) ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-slate-500">La hora de esta cita ya pasó. ¿Cómo terminó?</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            disabled={guardando}
+                            onClick={() => cerrar(seleccionada, 'atendida')}
+                            className="flex items-center justify-center gap-2 rounded-xl bg-[#013b4d] py-3 font-semibold text-white hover:bg-[#0f4d60] disabled:opacity-50"
+                          >
+                            <UserCheck className="h-4 w-4" /> Atendida
+                          </button>
+                          <button
+                            type="button"
+                            disabled={guardando}
+                            onClick={() => cerrar(seleccionada, 'no_asistio')}
+                            className="flex items-center justify-center gap-2 rounded-xl py-3 font-semibold text-orange-700 ring-1 ring-orange-300 hover:bg-orange-50 disabled:opacity-50"
+                          >
+                            <UserX className="h-4 w-4" /> No asistió
+                          </button>
+                        </div>
+                      </div>
+                    ) : (seleccionada.estado === 'pendiente' || seleccionada.estado === 'confirmada') && (
                       <div className="space-y-2">
                         {seleccionada.estado === 'pendiente' && (
                           <button
@@ -334,7 +446,9 @@ export function MedicoPage() {
                         <button
                           type="button"
                           disabled={guardando}
-                          onClick={() => responder(seleccionada, 'rechazada', mensaje)}
+                          onClick={() =>
+                            responder(seleccionada, seleccionada.estado === 'pendiente' ? 'rechazada' : 'cancelada', mensaje)
+                          }
                           className="flex w-full items-center justify-center gap-2 rounded-xl py-3 font-semibold text-red-600 ring-1 ring-red-300 hover:bg-red-50 disabled:opacity-50"
                         >
                           <X className="h-4 w-4" /> {seleccionada.estado === 'pendiente' ? 'Rechazar solicitud' : 'Cancelar cita'}
@@ -345,6 +459,9 @@ export function MedicoPage() {
                       type="button"
                       onClick={() => {
                         setEnviado(false)
+                        // El retraso es del día de la cita que está mirando.
+                        const dia = claveDia(seleccionada.inicio)
+                        setFechaNovedad(dia < proximosDias(1)[0] ? proximosDias(1)[0] : dia)
                         setMostrarReporte(true)
                       }}
                       className="flex w-full items-center justify-center gap-2 rounded-xl py-3 font-semibold text-amber-700 ring-1 ring-amber-300 hover:bg-amber-50"
@@ -381,7 +498,7 @@ export function MedicoPage() {
                     <X className="h-5 w-5" />
                   </button>
                 </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {OPCIONES_RAPIDAS.map(({ motivo, titulo, detalle, Icono }) => {
                     const sel = tipoNovedad === motivo && !mostrarInputTexto
                     return (
@@ -409,7 +526,7 @@ export function MedicoPage() {
                       setTipoNovedad('')
                     }}
                     aria-pressed={mostrarInputTexto}
-                    className={`sm:col-span-3 ${claseOpcion(mostrarInputTexto)}`}
+                    className={`col-span-2 sm:col-span-4 ${claseOpcion(mostrarInputTexto)}`}
                   >
                     <span className={claseIconoOpcion(mostrarInputTexto)}>
                       <MessageSquareText className="h-5 w-5" />
@@ -430,6 +547,36 @@ export function MedicoPage() {
                     className="w-full resize-none rounded-2xl border-2 border-slate-200 p-3 text-base outline-none transition-colors focus:border-[#2c6672]"
                   />
                 )}
+                <fieldset>
+                  <legend className="mb-1.5 text-sm font-medium text-slate-700">¿Qué día?</legend>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {proximosDias(2).map((clave) => (
+                      <button
+                        key={clave}
+                        type="button"
+                        onClick={() => setFechaNovedad(clave)}
+                        aria-pressed={fechaNovedad === clave}
+                        className={`rounded-xl px-3 py-1.5 text-sm font-medium capitalize ring-1 ${
+                          fechaNovedad === clave
+                            ? 'bg-[#2c6672] text-white ring-[#2c6672]'
+                            : 'bg-white text-slate-700 ring-slate-300 hover:bg-slate-50'
+                        }`}
+                      >
+                        {textoDia(clave)}
+                      </button>
+                    ))}
+                    <label className="flex items-center gap-2 text-sm text-slate-600">
+                      <span className="sr-only">Otra fecha</span>
+                      <input
+                        type="date"
+                        value={fechaNovedad}
+                        min={proximosDias(1)[0]}
+                        onChange={(e) => e.target.value && setFechaNovedad(e.target.value)}
+                        className="rounded-xl border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-[#2c6672]"
+                      />
+                    </label>
+                  </div>
+                </fieldset>
                 {error && <p className="text-sm text-red-600">{error}</p>}
                 <button
                   type="button"
@@ -463,12 +610,17 @@ export function MedicoPage() {
             {reportes.length > 0 && (
               <ul className="mt-4 space-y-1.5 border-t border-slate-100 pt-3">
                 {reportes.map((r) => (
-                  <li key={r.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="flex items-center gap-2 text-slate-700">
-                      <MapPin className="h-3.5 w-3.5 text-slate-400" />
-                      {r.motivo}
-                    </span>
-                    <span className="text-xs text-slate-500">{ESTADO_REPORTE[r.estado]}</span>
+                  <li key={r.id} className="text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2 text-slate-700">
+                        <MapPin className="h-3.5 w-3.5 text-slate-400" />
+                        {r.motivo} <span className="text-xs text-slate-400">· {textoDia(r.fecha_afectada)}</span>
+                      </span>
+                      <span className="text-xs text-slate-500">{ESTADO_REPORTE[r.estado]}</span>
+                    </div>
+                    {r.estado === 'rechazado' && r.comentario_admin && (
+                      <p className="mt-0.5 pl-5.5 text-xs text-red-700">Motivo del administrador: {r.comentario_admin}</p>
+                    )}
                   </li>
                 ))}
               </ul>

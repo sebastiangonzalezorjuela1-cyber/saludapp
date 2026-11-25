@@ -1,19 +1,11 @@
 import type { Session } from '@supabase/supabase-js'
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { supabase } from './supabaseClient'
+import { AuthContext, type ProblemaPerfil } from './useAuth'
 import type { Rol } from '../types/domain'
 
-// Reciclado de Buses Metro. Único cambio: además del rol se trae el nombre,
-// que SaludApp muestra en el saludo ("Bienvenido, Dani").
-interface AuthState {
-  session: Session | null
-  rol: Rol | null
-  nombre: string | null
-  cargando: boolean
-}
-
-const AuthContext = createContext<AuthState>({ session: null, rol: null, nombre: null, cargando: true })
-
+// Reciclado de Buses Metro (versión de la guía): además del rol trae el nombre
+// y distingue "sin perfil" de "sin conexión" en vez de mandar al login.
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   // Hasta que se lee la sesión guardada no se sabe si hay alguien conectado:
@@ -21,7 +13,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sesionLeida, setSesionLeida] = useState(false)
   const [rol, setRol] = useState<Rol | null>(null)
   const [nombre, setNombre] = useState<string | null>(null)
+  const [problemaPerfil, setProblemaPerfil] = useState<ProblemaPerfil | null>(null)
   const [cargando, setCargando] = useState(true)
+  const [intento, setIntento] = useState(0)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -44,30 +38,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!usuarioId) {
       setRol(null)
       setNombre(null)
+      setProblemaPerfil(null)
       setCargando(false)
       return
     }
     let vigente = true
     setCargando(true)
+    // maybeSingle y no single: "no hay fila" es un caso válido y así no se
+    // confunde con un fallo de red.
     supabase
       .from('usuarios')
       .select('rol, nombre')
       .eq('id', usuarioId)
-      .single()
-      .then(({ data }) => {
+      .maybeSingle()
+      .then(({ data, error }) => {
         if (!vigente) return
-        setRol((data?.rol as Rol) ?? null)
-        setNombre((data?.nombre as string) ?? null)
+        if (error) {
+          setRol(null)
+          setProblemaPerfil('sin_conexion')
+        } else if (!data) {
+          setRol(null)
+          setProblemaPerfil('sin_perfil')
+        } else {
+          setRol(data.rol as Rol)
+          setNombre(data.nombre as string)
+          setProblemaPerfil(null)
+        }
         setCargando(false)
       })
     return () => {
       vigente = false
     }
-  }, [usuarioId, sesionLeida])
+  }, [usuarioId, sesionLeida, intento])
 
-  return <AuthContext.Provider value={{ session, rol, nombre, cargando }}>{children}</AuthContext.Provider>
-}
+  const reintentarPerfil = useCallback(() => setIntento((n) => n + 1), [])
 
-export function useAuth() {
-  return useContext(AuthContext)
+  const valor = useMemo(
+    () => ({ session, rol, nombre, cargando, problemaPerfil, reintentarPerfil, actualizarNombre: setNombre }),
+    [session, rol, nombre, cargando, problemaPerfil, reintentarPerfil],
+  )
+
+  return <AuthContext.Provider value={valor}>{children}</AuthContext.Provider>
 }

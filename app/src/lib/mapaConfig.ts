@@ -3,13 +3,15 @@
 // queda protegida por las políticas RLS—, una clave de Google Maps no tiene nada
 // equivalente: quien la extraiga puede gastar contra tu facturación. La única
 // defensa es restringirla por referente HTTP en la consola de Google Cloud.
-export const GOOGLE_MAPS_API_KEY: string = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? ''
+export const GOOGLE_MAPS_API_KEY: string = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '').trim()
 
 // AdvancedMarker no se dibuja si el mapa no lleva un Map ID. 'DEMO_MAP_ID' es el
 // identificador de desarrollo de Google: evita tener que crear uno para empezar.
 // Para producción crea el tuyo en la consola y ponlo en VITE_GOOGLE_MAPS_ID; el
 // de demo no admite estilos personalizados.
-export const GOOGLE_MAPS_ID: string = import.meta.env.VITE_GOOGLE_MAPS_ID ?? 'DEMO_MAP_ID'
+// || y no ??: en .env.local la línea suele existir vacía ("VITE_GOOGLE_MAPS_ID="),
+// y una cadena vacía no es null: con ?? el mapa quedaba sin Map ID y sin marcadores.
+export const GOOGLE_MAPS_ID: string = import.meta.env.VITE_GOOGLE_MAPS_ID?.trim() || 'DEMO_MAP_ID'
 
 // Sin clave el mapa de Google se renderiza en gris con una marca de agua de error,
 // que parece un bug de la app. Con esto mostramos un aviso honesto en su lugar.

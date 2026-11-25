@@ -4,20 +4,32 @@ import {
   Building2,
   CalendarDays,
   CalendarPlus,
+  CalendarX2,
   CheckCircle2,
   ClipboardList,
   Clock,
   Inbox,
   RefreshCw,
   Shuffle,
+  BarChart3,
   Stethoscope,
   XCircle,
 } from 'lucide-react'
 import { supabase } from '../../lib/supabaseClient'
-import { useAuth } from '../../lib/AuthContext'
+import { useAuth } from '../../lib/useAuth'
+import { useAhora } from '../../hooks/useAhora'
+import { mensajeDeError } from '../../lib/mensajesError'
+import { AvisoError } from '../../lib/AvisoError'
 import { Encabezado, Pie, Plantas, Portada } from '../../lib/Plantilla'
-import { ESTADOS_CITA, claveDia, fechaLarga, hora } from '../../lib/citas'
-import type { Cita, EstadoReporte, Especialidad, Medico, Reporte, Sede, Usuario } from '../../types/domain'
+import { PanelEstadisticas } from './PanelEstadisticas'
+import { ESTADOS_ACTIVOS, ESTADOS_CITA, claveDia, fechaLarga, hora, textoDia } from '../../lib/citas'
+import type { Cita, EstadoReporte, Especialidad, Medico, Reporte, Sede, TipoReporte, Usuario } from '../../types/domain'
+
+const TIPOS_REPORTE: Record<TipoReporte, string> = {
+  retraso: 'Retraso',
+  ausencia: 'Ausencia',
+  otro: 'Otra novedad',
+}
 
 // Reciclado del panel del agente de Buses Metro.
 //   Bandeja de reportes + aprobar/rechazar + archivar  -> igual (novedades de médicos)
@@ -120,7 +132,7 @@ export function AdminPage() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([])
   const [citas, setCitas] = useState<Cita[]>([])
   const [filtro, setFiltro] = useState<EstadoReporte | 'todos'>('todos')
-  const [vista, setVista] = useState<'reportes' | 'citas' | 'asignaciones'>('reportes')
+  const [vista, setVista] = useState<'reportes' | 'citas' | 'asignaciones' | 'estadisticas'>('reportes')
   const [verArchivados, setVerArchivados] = useState(false)
   const [archivando, setArchivando] = useState(false)
   const [avisoArchivado, setAvisoArchivado] = useState<string | null>(null)
@@ -128,14 +140,25 @@ export function AdminPage() {
   const [avisoAsignacion, setAvisoAsignacion] = useState<string | null>(null)
   const [cargando, setCargando] = useState(true)
   const [refrescando, setRefrescando] = useState(false)
+  const [errorCarga, setErrorCarga] = useState<string | null>(null)
+  const [avisoBandeja, setAvisoBandeja] = useState<string | null>(null)
+  // Id del reporte que se está decidiendo: evita el doble toque.
+  const [decidiendo, setDecidiendo] = useState<string | null>(null)
+  // Rechazo con motivo: qué reporte se está rechazando y el texto escrito.
+  const [rechazandoId, setRechazandoId] = useState<string | null>(null)
+  const [comentarioRechazo, setComentarioRechazo] = useState('')
+  // Contados en la base, no en la lista recortada a LIMITE_REPORTES.
+  const [totales, setTotales] = useState({ bandeja: 0, pendientes: 0 })
+
+  const ahora = useAhora()
 
   const nombreDe = useCallback((id: string | null) => usuarios.find((u) => u.id === id)?.nombre ?? '—', [usuarios])
 
   const cargar = useCallback(async () => {
-    const [resReportes, resMedicos, resSedes, resEsp, resUsuarios, resCitas] = await Promise.all([
+    const [resReportes, resMedicos, resSedes, resEsp, resUsuarios, resCitas, resTotal, resPendientes] = await Promise.all([
       supabase
         .from('reportes')
-        .select('*')
+        .select('*', { count: 'exact' })
         .eq('archivado', verArchivados)
         .order('creado_en', { ascending: false })
         .limit(LIMITE_REPORTES),
@@ -145,7 +168,27 @@ export function AdminPage() {
       supabase.from('usuarios').select('*'),
       // Solo las citas tomadas: los horarios libres son cientos y no aportan aquí.
       supabase.from('citas').select('*').neq('estado', 'disponible').order('inicio'),
+      // head: true → solo cuenta, sin traer filas.
+      supabase.from('reportes').select('id', { count: 'exact', head: true }).eq('archivado', verArchivados),
+      supabase.from('reportes').select('id', { count: 'exact', head: true }).eq('archivado', false).eq('estado', 'pendiente'),
     ])
+
+    const fallo =
+      resReportes.error ??
+      resMedicos.error ??
+      resSedes.error ??
+      resEsp.error ??
+      resUsuarios.error ??
+      resCitas.error ??
+      resTotal.error ??
+      resPendientes.error
+    if (fallo) {
+      // Se conservan los datos anteriores y se avisa.
+      setErrorCarga(mensajeDeError(fallo))
+      setCargando(false)
+      return
+    }
+    setErrorCarga(null)
 
     const listaMedicos = (resMedicos.data as Medico[]) ?? []
     const listaUsuarios = (resUsuarios.data as Usuario[]) ?? []
@@ -167,6 +210,7 @@ export function AdminPage() {
     setEspecialidades(listaEsp)
     setUsuarios(listaUsuarios)
     setCitas((resCitas.data as Cita[]) ?? [])
+    setTotales({ bandeja: resTotal.count ?? 0, pendientes: resPendientes.count ?? 0 })
     setCargando(false)
   }, [verArchivados])
 
@@ -179,6 +223,8 @@ export function AdminPage() {
     const canal = supabase
       .channel('admin')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'reportes' }, () => void cargar())
+      // UPDATE: así dos administradores ven las decisiones del otro.
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'reportes' }, () => void cargar())
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'citas' }, () => void cargar())
       .subscribe()
     return () => {
@@ -186,16 +232,74 @@ export function AdminPage() {
     }
   }, [cargar])
 
-  async function actualizarEstado(id: string, estado: 'aprobado' | 'rechazado') {
+  async function actualizarEstado(id: string, estado: 'aprobado' | 'rechazado', comentario?: string) {
     const revisadoEn = new Date().toISOString()
-    const { error } = await supabase
+    // Motivo opcional: si está vacío se guarda null (la base no acepta '').
+    const comentarioAdmin = estado === 'rechazado' ? comentario?.trim() || null : null
+    if (comentarioAdmin && comentarioAdmin.length > 300) {
+      setAvisoBandeja('El motivo del rechazo puede tener como máximo 300 caracteres.')
+      return
+    }
+    setDecidiendo(id)
+    setAvisoBandeja(null)
+    // .select('id'): si RLS rechaza el update no da error, devuelve 0 filas.
+    const { data, error } = await supabase
       .from('reportes')
-      .update({ estado, revisado_por: session?.user.id ?? null, revisado_en: revisadoEn })
+      .update({ estado, revisado_por: session?.user.id ?? null, revisado_en: revisadoEn, comentario_admin: comentarioAdmin })
       .eq('id', id)
-    if (error) return
+      .select('id')
+    setDecidiendo(null)
+    if (error || !data?.length) {
+      setAvisoBandeja(error ? mensajeDeError(error) : 'No se pudo guardar la decisión. ¿Tu usuario es administrador?')
+      return
+    }
+    setRechazandoId(null)
+    setComentarioRechazo('')
     setReportes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, estado, revisado_por: session?.user.id ?? null, revisado_en: revisadoEn } : r)),
+      prev.map((r) =>
+        r.id === id
+          ? { ...r, estado, revisado_por: session?.user.id ?? null, revisado_en: revisadoEn, comentario_admin: comentarioAdmin }
+          : r,
+      ),
     )
+    setTotales((t) => ({ ...t, pendientes: Math.max(0, t.pendientes - 1) }))
+  }
+
+  // Citas de pacientes que se cancelarían por una ausencia (para avisar antes).
+  function citasAfectadas(reporte: ReporteEnriquecido): number {
+    // ahora: reloj compartido (useAhora), no Date.now() durante el render.
+    return citas.filter(
+      (c) =>
+        c.medico_id === reporte.medico_id &&
+        (c.estado === 'pendiente' || c.estado === 'confirmada') &&
+        Date.parse(c.inicio) > ahora &&
+        claveDia(c.inicio) === reporte.fecha_afectada,
+    ).length
+  }
+
+  async function cancelarPorAusencia(reporte: ReporteEnriquecido) {
+    const n = citasAfectadas(reporte)
+    const seguro = window.confirm(
+      `${reporte.medico ?? 'El médico'} no atenderá ${textoDia(reporte.fecha_afectada)}.\n\n` +
+        `Se cancelarán ${n} ${n === 1 ? 'cita' : 'citas'} de pacientes (lo verán al instante y podrán reprogramar) ` +
+        `y se cerrará su agenda de ese día. ¿Continuar?`,
+    )
+    if (!seguro) return
+    setDecidiendo(reporte.id)
+    setAvisoBandeja(null)
+    const { data, error } = await supabase.rpc('cancelar_citas_por_ausencia', { p_reporte: reporte.id })
+    setDecidiendo(null)
+    if (error) {
+      setAvisoBandeja(mensajeDeError(error))
+      return
+    }
+    const canceladas = (data as number) ?? 0
+    setAvisoArchivado(
+      canceladas === 0
+        ? 'No quedaban citas de pacientes ese día. La agenda de ese día quedó cerrada.'
+        : `${canceladas} ${canceladas === 1 ? 'cita cancelada' : 'citas canceladas'} y agenda de ese día cerrada.`,
+    )
+    await cargar()
   }
 
   async function archivarResueltos() {
@@ -203,7 +307,7 @@ export function AdminPage() {
     setAvisoArchivado(null)
     const { data, error } = await supabase.rpc('archivar_reportes_resueltos', { p_dias: DIAS_PARA_ARCHIVAR })
     if (error) {
-      setAvisoArchivado(error.message)
+      setAvisoArchivado(mensajeDeError(error))
     } else {
       const n = (data as number) ?? 0
       setAvisoArchivado(
@@ -225,7 +329,7 @@ export function AdminPage() {
     setGuardando(medicoId)
     setAvisoAsignacion(null)
     const { data, error } = await supabase.from('medicos').update({ sede_id: sedeId }).eq('id', medicoId).select()
-    if (error || !data?.length) setAvisoAsignacion(error?.message ?? 'No se pudo guardar. ¿Tu usuario es administrador?')
+    if (error || !data?.length) setAvisoAsignacion(error ? mensajeDeError(error) : 'No se pudo guardar. ¿Tu usuario es administrador?')
     await cargar()
     setGuardando(null)
   }
@@ -235,7 +339,19 @@ export function AdminPage() {
     setGuardando(medicoId)
     setAvisoAsignacion(null)
     const desde = new Date().toISOString()
-    const { data: existentes } = await supabase.from('citas').select('inicio').eq('medico_id', medicoId).gte('inicio', desde)
+    // Solo cuentan los horarios activos: una cita cancelada o rechazada ya no
+    // ocupa su hora (la base reabre esa hora por su cuenta).
+    const { data: existentes, error: errorExistentes } = await supabase
+      .from('citas')
+      .select('inicio')
+      .eq('medico_id', medicoId)
+      .in('estado', [...ESTADOS_ACTIVOS])
+      .gte('inicio', desde)
+    if (errorExistentes) {
+      setAvisoAsignacion(mensajeDeError(errorExistentes))
+      setGuardando(null)
+      return
+    }
     const ocupados = new Set(((existentes as { inicio: string }[]) ?? []).map((c) => Date.parse(c.inicio)))
     const nuevos: { medico_id: string; inicio: string }[] = []
     for (let i = 0; i <= DIAS_AGENDA; i++) {
@@ -253,7 +369,14 @@ export function AdminPage() {
       setAvisoAsignacion('Ese médico ya tiene abiertos todos sus horarios de los próximos 14 días.')
     } else {
       const { error } = await supabase.from('citas').insert(nuevos)
-      setAvisoAsignacion(error ? error.message : `${nuevos.length} horarios nuevos abiertos para ${nombreDe(medicoId)}.`)
+      // 23505: otro administrador abrió los mismos horarios a la vez (índice único).
+      setAvisoAsignacion(
+        error
+          ? error.code === '23505'
+            ? 'Algunos de esos horarios ya existían. Pulsa de nuevo "Generar horarios" para abrir solo los que faltan.'
+            : mensajeDeError(error)
+          : `${nuevos.length} horarios nuevos abiertos para ${nombreDe(medicoId)}.`,
+      )
     }
     setGuardando(null)
   }
@@ -290,36 +413,45 @@ export function AdminPage() {
         <Portada alto="bajo" titulo="Panel de administración" subtitulo="Revisa novedades de los médicos, asigna sedes y supervisa las citas." />
 
         <div className="relative z-10 mx-auto -mt-16 max-w-6xl space-y-5 p-4 sm:-mt-20 sm:p-6">
+          {errorCarga && (
+            <AvisoError
+              titulo={usuarios.length ? 'No se pudo actualizar el panel' : 'No se pudo cargar el panel'}
+              detalle={usuarios.length ? `${errorCarga} Lo que ves puede estar desactualizado.` : errorCarga}
+              onReintentar={refrescar}
+              reintentando={refrescando}
+            />
+          )}
           {cargando ? (
             <p className="text-sm text-slate-500">Cargando panel…</p>
-          ) : (
+          ) : errorCarga && !usuarios.length ? null : (
             <>
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
                 <Tarjeta
                   etiqueta="Novedades por revisar"
-                  valor={conteos.pendiente}
+                  valor={totales.pendientes}
                   Icono={Clock}
                   destacada
-                  nota={conteos.pendiente === 0 ? 'Todo al día' : 'Requieren tu decisión'}
+                  nota={totales.pendientes === 0 ? 'Todo al día' : 'Requieren tu decisión'}
                 />
                 <Tarjeta etiqueta="Citas hoy" valor={citasHoy} Icono={CalendarDays} />
                 <Tarjeta etiqueta="Citas por confirmar" valor={citasPendientes} Icono={ClipboardList} nota="Esperando al médico" />
                 <Tarjeta etiqueta="Médicos" valor={medicos.length} Icono={Stethoscope} nota={`${sedes.length} sedes`} />
               </div>
 
-              <div className="flex gap-1 rounded-2xl bg-white/70 p-1 shadow-sm ring-1 ring-slate-200/80">
+              <div className="flex gap-1 overflow-x-auto rounded-2xl bg-white/70 p-1 shadow-sm ring-1 ring-slate-200/80">
                 {(
                   [
                     ['reportes', 'Novedades', Inbox],
                     ['citas', 'Citas', CalendarDays],
                     ['asignaciones', 'Médicos y sedes', Shuffle],
+                    ['estadisticas', 'Estadísticas', BarChart3],
                   ] as const
                 ).map(([clave, texto, Icono]) => (
                   <button
                     key={clave}
                     type="button"
                     onClick={() => setVista(clave)}
-                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${
                       vista === clave
                         ? 'bg-[#013b4d] text-white shadow-md shadow-[#013b4d]/20'
                         : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -327,14 +459,16 @@ export function AdminPage() {
                   >
                     <Icono className="h-4 w-4" />
                     {texto}
-                    {clave === 'reportes' && conteos.pendiente > 0 && (
-                      <span className="rounded-full bg-amber-400 px-1.5 text-xs font-semibold text-amber-950">{conteos.pendiente}</span>
+                    {clave === 'reportes' && totales.pendientes > 0 && (
+                      <span className="rounded-full bg-amber-400 px-1.5 text-xs font-semibold text-amber-950">{totales.pendientes}</span>
                     )}
                   </button>
                 ))}
               </div>
 
-              {vista === 'citas' ? (
+              {vista === 'estadisticas' ? (
+                <PanelEstadisticas />
+              ) : vista === 'citas' ? (
                 <Panel titulo="Citas tomadas por pacientes" Icono={CalendarDays}>
                   {citas.length === 0 ? (
                     <p className="text-sm text-slate-500">Todavía no hay citas tomadas.</p>
@@ -474,6 +608,11 @@ export function AdminPage() {
                   {avisoArchivado && (
                     <p className="mb-3 rounded-lg bg-slate-50 p-2.5 text-xs text-slate-600 ring-1 ring-slate-200">{avisoArchivado}</p>
                   )}
+                  {avisoBandeja && (
+                    <p role="alert" className="mb-3 rounded-lg bg-red-50 p-2.5 text-xs text-red-800 ring-1 ring-red-200">
+                      {avisoBandeja}
+                    </p>
+                  )}
 
                   <BarraDistribucion conteos={conteos} total={reportes.length} />
 
@@ -506,6 +645,12 @@ export function AdminPage() {
                     })}
                   </div>
 
+                  {totales.bandeja > reportes.length && (
+                    <p className="mb-3 text-xs text-slate-500">
+                      Mostrando las {reportes.length} más recientes de {totales.bandeja}. Archiva las resueltas para ver el resto.
+                    </p>
+                  )}
+
                   {visibles.length === 0 ? (
                     <div className="py-10 text-center">
                       <Inbox className="mx-auto mb-2 h-8 w-8 text-slate-300" />
@@ -521,11 +666,34 @@ export function AdminPage() {
                           <li key={reporte.id} className="rounded-lg p-3 ring-1 ring-slate-200 transition-colors hover:bg-slate-50">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <p className="font-medium text-slate-900">{reporte.motivo}</p>
+                                <p className="flex flex-wrap items-center gap-2 font-medium text-slate-900">
+                                  {reporte.motivo}
+                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                                    {TIPOS_REPORTE[reporte.tipo]} · para {textoDia(reporte.fecha_afectada)}
+                                  </span>
+                                </p>
                                 <p className="mt-0.5 text-xs text-slate-500">
                                   {reporte.medico ?? 'Médico desconocido'}
                                   {reporte.especialidad && ` · ${reporte.especialidad}`} · {tiempoRelativo(reporte.creado_en)}
                                 </p>
+                                {reporte.estado === 'rechazado' && reporte.comentario_admin && (
+                                  <p className="mt-1 text-xs text-red-700">Motivo del rechazo: {reporte.comentario_admin}</p>
+                                )}
+                                {/* Ausencia aprobada de hoy o un día futuro: se puede cerrar la agenda de ese día. */}
+                                {reporte.estado === 'aprobado' &&
+                                  reporte.tipo === 'ausencia' &&
+                                  !verArchivados &&
+                                  reporte.fecha_afectada >= claveDia(new Date()) && (
+                                    <button
+                                      type="button"
+                                      disabled={decidiendo === reporte.id}
+                                      onClick={() => cancelarPorAusencia(reporte)}
+                                      className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-300 hover:bg-red-50 disabled:opacity-50"
+                                    >
+                                      <CalendarX2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                      Cancelar citas de ese día ({citasAfectadas(reporte)})
+                                    </button>
+                                  )}
                               </div>
                               <div className="flex shrink-0 items-center gap-2">
                                 <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${chip}`}>
@@ -535,14 +703,22 @@ export function AdminPage() {
                                 {reporte.estado === 'pendiente' && (
                                   <>
                                     <button
+                                      type="button"
+                                      disabled={decidiendo === reporte.id}
                                       onClick={() => actualizarEstado(reporte.id, 'aprobado')}
-                                      className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90"
+                                      className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
                                     >
                                       Aprobar y avisar
                                     </button>
                                     <button
-                                      onClick={() => actualizarEstado(reporte.id, 'rechazado')}
-                                      className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90"
+                                      type="button"
+                                      disabled={decidiendo === reporte.id}
+                                      onClick={() => {
+                                        setRechazandoId(reporte.id)
+                                        setComentarioRechazo('')
+                                      }}
+                                      aria-expanded={rechazandoId === reporte.id}
+                                      className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
                                     >
                                       Rechazar
                                     </button>
@@ -550,6 +726,42 @@ export function AdminPage() {
                                 )}
                               </div>
                             </div>
+                            {rechazandoId === reporte.id && reporte.estado === 'pendiente' && (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault()
+                                  void actualizarEstado(reporte.id, 'rechazado', comentarioRechazo)
+                                }}
+                                className="mt-3 flex flex-wrap items-end gap-2 rounded-lg bg-red-50/60 p-3 ring-1 ring-red-100"
+                              >
+                                <label className="min-w-0 flex-1 text-xs font-medium text-slate-600">
+                                  Motivo del rechazo (opcional, lo verá el médico)
+                                  <input
+                                    type="text"
+                                    value={comentarioRechazo}
+                                    maxLength={300}
+                                    autoFocus
+                                    onChange={(e) => setComentarioRechazo(e.target.value)}
+                                    placeholder="Ej.: ya se avisó por teléfono"
+                                    className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-normal text-slate-800 outline-none focus:border-red-400"
+                                  />
+                                </label>
+                                <button
+                                  type="submit"
+                                  disabled={decidiendo === reporte.id}
+                                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                                >
+                                  Confirmar rechazo
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRechazandoId(null)}
+                                  className="rounded-md px-3 py-1.5 text-xs font-medium text-slate-600 ring-1 ring-slate-300 hover:bg-white"
+                                >
+                                  Cancelar
+                                </button>
+                              </form>
+                            )}
                           </li>
                         )
                       })}

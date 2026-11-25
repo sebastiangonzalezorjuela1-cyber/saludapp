@@ -25,3 +25,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Respaldos locales hechos antes de cada parte (incluyen .env.local)
+.respaldos/

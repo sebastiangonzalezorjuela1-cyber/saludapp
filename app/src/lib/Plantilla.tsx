@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { User, type LucideIcon } from 'lucide-react'
 import { supabase } from './supabaseClient'
-import { useAuth } from './AuthContext'
+import { nombreVisible, useAuth } from './useAuth'
+import { VentanaAjustes } from './VentanaAjustes'
 import { Marca } from './Marca'
 import tuerca from '../assets/decor/tuerca.png'
 import plantaIzquierda from '../assets/decor/planta-izquierda.png'
@@ -12,8 +13,9 @@ import plantaDerecha from '../assets/decor/planta-derecha.png'
 // a un solo archivo para que las tres pantallas de SaludApp las compartan.
 
 export function Encabezado({ derecha }: { derecha?: ReactNode }) {
-  const { nombre, session } = useAuth()
-  const nombreMostrado = nombre ?? session?.user.email?.split('@')[0] ?? 'Usuario'
+  const auth = useAuth()
+  const nombreMostrado = nombreVisible(auth)
+  const [ajustesAbiertos, setAjustesAbiertos] = useState(false)
 
   return (
     <header className="relative z-20 shrink-0 bg-[#013b4d] shadow-lg shadow-[#013b4d]/25">
@@ -24,12 +26,14 @@ export function Encabezado({ derecha }: { derecha?: ReactNode }) {
 
         <button
           type="button"
-          aria-label="Configuración"
-          title="Configuración"
+          aria-label="Ajustes de tu cuenta"
+          title="Ajustes"
+          onClick={() => setAjustesAbiertos(true)}
           className="group grid h-10 w-10 shrink-0 place-items-center rounded-full ring-1 ring-white/20 transition-colors hover:bg-white/10"
         >
           <img src={tuerca} alt="" className="h-6 w-6 transition-transform duration-500 group-hover:rotate-90" />
         </button>
+        <VentanaAjustes abierta={ajustesAbiertos} onCambiar={setAjustesAbiertos} />
 
         <div className="flex items-center gap-2.5 rounded-full bg-white/10 p-1.5 ring-1 ring-white/15 sm:pr-4">
           <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-[#013b4d]">

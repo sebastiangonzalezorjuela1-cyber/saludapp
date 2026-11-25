@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { mensajeDeError } from './mensajesError'
 
 export const PREGUNTAS_SEGURIDAD = [
   '¿Cuál es el nombre de tu primera mascota?',
@@ -20,5 +21,5 @@ export async function llamarRecuperacion<T>(body: Record<string, unknown>): Prom
     const detalle = await contexto.json().catch(() => null)
     if (detalle?.error) throw new Error(detalle.error)
   }
-  throw new Error(error.message)
+  throw new Error(mensajeDeError(error))
 }

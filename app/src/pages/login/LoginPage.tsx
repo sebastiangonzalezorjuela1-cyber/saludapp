@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { User } from 'lucide-react'
 import { supabase } from '../../lib/supabaseClient'
-import { useAuth } from '../../lib/AuthContext'
+import { useAuth } from '../../lib/useAuth'
+import { mensajeDeError } from '../../lib/mensajesError'
+import { ProblemaPerfil } from '../../lib/ProblemaPerfil'
 import { PREGUNTAS_SEGURIDAD } from '../../lib/preguntasSeguridad'
 import { esEmailValido } from '../../lib/validarEmail'
 import { CampoPassword, RequisitosPassword } from '../../lib/CampoPassword'
@@ -50,7 +52,7 @@ const TEMAS: Record<Rol, Tema> = {
 export function LoginPage() {
   const { rol: rolUrl } = useParams<{ rol: string }>()
   const navigate = useNavigate()
-  const { rol: rolSesion, cargando } = useAuth()
+  const { rol: rolSesion, cargando, session, problemaPerfil } = useAuth()
   const [modo, setModo] = useState<ModoIngreso>('ingresar')
   const [nombre, setNombre] = useState('')
   const [email, setEmail] = useState('')
@@ -60,12 +62,20 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [mensaje, setMensaje] = useState<string | null>(null)
   const [enviando, setEnviando] = useState(false)
+  // Mientras se registra, el perfil ya existe (lo crea un trigger) y la
+  // redirección automática desmontaría la página antes de guardar la pregunta.
+  const [registrando, setRegistrando] = useState(false)
+  // La cuenta se creó pero la pregunta de seguridad falló: se ofrece continuar.
+  const [puedeContinuar, setPuedeContinuar] = useState(false)
 
   useEffect(() => {
-    if (!cargando && rolSesion) navigate(`/${rolSesion}`, { replace: true })
-  }, [rolSesion, cargando, navigate])
+    if (!cargando && rolSesion && !registrando) navigate(`/${rolSesion}`, { replace: true })
+  }, [rolSesion, cargando, registrando, navigate])
 
   if (!rolUrl || !(rolUrl in TEMAS)) return <Navigate to="/login" replace />
+  // Ingresó bien pero no hay perfil o no hay red: antes el botón se quedaba en
+  // "Un momento…" para siempre.
+  if (!cargando && session && problemaPerfil && !registrando) return <ProblemaPerfil />
   const rolObjetivo = rolUrl as Rol
   const tema = TEMAS[rolObjetivo]
 
@@ -84,7 +94,7 @@ export function LoginPage() {
     // hace fallar el ingreso de una cuenta que sí existe.
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
     if (error) {
-      setError(error.message)
+      setError(mensajeDeError(error))
       setEnviando(false)
     }
     // si no hay error, el useEffect de arriba redirige apenas se resuelva el rol
@@ -94,6 +104,12 @@ export function LoginPage() {
     e.preventDefault()
     setError(null)
     setMensaje(null)
+
+    const nombreLimpio = nombre.trim()
+    if (nombreLimpio.length === 0 || nombreLimpio.length > 80) {
+      setError('Escribe tu nombre (máximo 80 caracteres).')
+      return
+    }
 
     const emailLimpio = email.trim()
     if (!esEmailValido(emailLimpio)) {
@@ -106,52 +122,48 @@ export function LoginPage() {
       return
     }
 
-    setEnviando(true)
-
-    const { data, error: signUpError } = await supabase.auth.signUp({
-      email: emailLimpio,
-      password,
-    })
-    if (signUpError) {
-      setError(signUpError.message)
-      setEnviando(false)
+    if (respuestaSeguridad.trim().length < 2) {
+      setError('La respuesta de seguridad debe tener al menos 2 caracteres.')
       return
     }
 
-    const usuarioNuevo = data.user
-    if (!usuarioNuevo) {
-      setError('No se pudo crear la cuenta.')
+    setEnviando(true)
+    setRegistrando(true)
+
+    // El perfil (rol paciente) lo crea la base con un trigger, usando este nombre.
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: emailLimpio,
+      password,
+      options: { data: { nombre: nombreLimpio } },
+    })
+    if (signUpError || !data.user) {
+      setError(signUpError ? mensajeDeError(signUpError) : 'No se pudo crear la cuenta.')
       setEnviando(false)
+      setRegistrando(false)
       return
     }
 
     if (!data.session) {
-      setMensaje('Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.')
+      // Auth exige confirmar el correo: sin sesión no se puede guardar la pregunta.
+      setRegistrando(false)
       cambiarModo('ingresar')
+      setMensaje(
+        'Cuenta creada. Revisa tu correo para confirmarla e inicia sesión. Luego configura tu pregunta de seguridad en Ajustes.',
+      )
       setEnviando(false)
       return
     }
 
-    // Va antes del insert en `usuarios`: esa fila es la que hace resolver el rol
-    // y dispara la redirección automática, que desmontaría esta página con el
-    // RPC todavía en vuelo. La respuesta se hashea dentro de la función.
+    // La respuesta se hashea dentro de la función.
     const { error: errorPregunta } = await supabase.rpc('guardar_pregunta_seguridad', {
       p_pregunta: pregunta,
       p_respuesta: respuestaSeguridad,
     })
 
     if (errorPregunta) {
-      setError(errorPregunta.message)
-      setEnviando(false)
-      return
-    }
-
-    const { error: insertError } = await supabase
-      .from('usuarios')
-      .insert({ id: usuarioNuevo.id, nombre, rol: 'paciente' })
-
-    if (insertError) {
-      setError(insertError.message)
+      // La cuenta ya existe: no tiene sentido volver a registrarse.
+      setError(`Tu cuenta se creó, pero no se pudo guardar la pregunta de seguridad (${mensajeDeError(errorPregunta)}). Puedes configurarla luego en Ajustes.`)
+      setPuedeContinuar(true)
       setEnviando(false)
       return
     }
@@ -256,8 +268,25 @@ export function LoginPage() {
         </>
       )}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {mensaje && <p className="text-sm text-emerald-600">{mensaje}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
+      {mensaje && (
+        <p role="status" className="text-sm text-emerald-600">
+          {mensaje}
+        </p>
+      )}
+      {puedeContinuar && (
+        <button
+          type="button"
+          onClick={() => navigate('/paciente', { replace: true })}
+          className="w-full rounded px-3 py-2 text-sm font-medium text-[#013b4d] ring-1 ring-[#013b4d]/30 hover:bg-white/60"
+        >
+          Continuar
+        </button>
+      )}
 
       <button
         type="submit"

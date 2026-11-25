@@ -35,7 +35,15 @@ export interface Medico {
   consultorio: string
 }
 
-export type EstadoCita = 'disponible' | 'pendiente' | 'confirmada' | 'rechazada' | 'cancelada'
+export type EstadoCita =
+  | 'disponible'
+  | 'pendiente'
+  | 'confirmada'
+  | 'rechazada'
+  | 'cancelada'
+  // Cierre que hace el médico cuando la cita ya empezó.
+  | 'atendida'
+  | 'no_asistio'
 
 export interface Cita {
   id: string
@@ -46,10 +54,17 @@ export interface Cita {
   motivo: string | null
   mensaje: string | null
   actualizado_en: string
+  // Solo en citas canceladas: quién la canceló y por qué.
+  cancelada_por: 'paciente' | 'medico' | 'sistema' | null
+  motivo_cancelacion: string | null
+  // Cuándo la pidió el paciente y cuándo respondió el médico (null en citas antiguas).
+  solicitada_en: string | null
+  respondida_en: string | null
 }
 
 // Igual que en buses: novedad que reporta el médico y revisa el admin.
 export type EstadoReporte = 'pendiente' | 'aprobado' | 'rechazado'
+export type TipoReporte = 'retraso' | 'ausencia' | 'otro'
 
 export interface Reporte {
   id: string
@@ -60,4 +75,12 @@ export interface Reporte {
   revisado_en: string | null
   archivado: boolean
   creado_en: string
+  tipo: TipoReporte
+  // Solo en retrasos (1-240).
+  minutos_retraso: number | null
+  // Día al que afecta, "AAAA-MM-DD" en hora de Colombia.
+  fecha_afectada: string
+  // Motivo del rechazo que escribe el admin (opcional).
+  comentario_admin: string | null
+  origen: 'medico' | 'sistema'
 }

@@ -11,6 +11,8 @@
     "dev:all": "concurrently -n paciente,medico,admin -c blue,yellow,magenta \"npm:dev:paciente\" \"npm:dev:medico\" \"npm:dev:admin\"",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -37,6 +39,7 @@
     "oxlint": "^1.79.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.1.1"
   }
 }

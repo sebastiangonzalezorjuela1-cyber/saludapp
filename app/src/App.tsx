@@ -1,5 +1,6 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom'
-import { AuthProvider, useAuth } from './lib/AuthContext'
+import { AuthProvider } from './lib/AuthContext'
+import { useAuth } from './lib/useAuth'
 import { RutaProtegida } from './lib/RutaProtegida'
 import { rolInicial } from './lib/rolInicial'
 import { LoginPage } from './pages/login/LoginPage'
@@ -27,7 +28,9 @@ function App() {
           <Route path="/login/:rol" element={<LoginPage />} />
           <Route path="/recuperar" element={<RecuperarPasswordPage />} />
           <Route
-            path="/paciente"
+            // /* : la página del paciente maneja sus subrutas (citas, agendar, detalle)
+            // sin desmontarse, así no se cortan sus suscripciones en tiempo real.
+            path="/paciente/*"
             element={
               <RutaProtegida rolPermitido="paciente">
                 <PacientePage />

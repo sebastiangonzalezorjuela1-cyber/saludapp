@@ -6,7 +6,7 @@
     "module": "esnext",
     // La lista explícita desactiva la carga automática del resto de @types,
     // así que google.maps (namespace global de la API de Maps) va nombrado.
-    "types": ["vite/client", "google.maps"],
+    "types": ["vite/client", "google.maps", "vitest/globals"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

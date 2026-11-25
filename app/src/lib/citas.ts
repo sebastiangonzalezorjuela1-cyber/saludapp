@@ -1,10 +1,38 @@
-import { Baby, Brain, CalendarClock, CircleCheck, CircleX, Clock, Ban, Stethoscope, type LucideIcon } from 'lucide-react'
+import {
+  Baby,
+  Brain,
+  CalendarClock,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Ban,
+  Stethoscope,
+  UserCheck,
+  UserX,
+  type LucideIcon,
+} from 'lucide-react'
 import { createElement, type SVGProps } from 'react'
 import type { EstadoCita } from '../types/domain'
 
 // Todas las citas se muestran en hora de Colombia, aunque el navegador esté en
 // otra zona: los horarios de las clínicas son locales.
 const ZONA = 'America/Bogota'
+
+// Debe coincidir con cancelar_cita y reprogramar_cita en la base, que son las
+// que de verdad lo hacen cumplir; aquí solo sirve para no ofrecer el botón.
+export const HORAS_LIMITE_CANCELACION = 2
+
+export function sePuedeCancelar(inicio: string, ahora = Date.now()): boolean {
+  return Date.parse(inicio) - ahora > HORAS_LIMITE_CANCELACION * 60 * 60 * 1000
+}
+
+// "inicio del día de hoy" en Colombia, en ISO, para filtrar con .gte().
+export function inicioDeHoy(): string {
+  return new Date(`${claveDia(new Date())}T00:00:00-05:00`).toISOString()
+}
+
+// Estados que ocupan un horario (los mismos del índice único de la base).
+export const ESTADOS_ACTIVOS = ['disponible', 'pendiente', 'confirmada'] as const
 
 export function fechaLarga(iso: string): string {
   return new Intl.DateTimeFormat('es-CO', { timeZone: ZONA, day: 'numeric', month: 'long', year: 'numeric' }).format(
@@ -39,6 +67,17 @@ export function proximosDias(cantidad: number): string[] {
   return dias
 }
 
+// "hoy", "mañana" o "lunes 30 de noviembre" para una clave AAAA-MM-DD.
+export function textoDia(clave: string): string {
+  const [hoy, manana] = proximosDias(2)
+  if (clave === hoy) return 'hoy'
+  if (clave === manana) return 'mañana'
+  // Mediodía UTC: así el día no se corre al formatear en Colombia.
+  return new Intl.DateTimeFormat('es-CO', { timeZone: ZONA, weekday: 'long', day: 'numeric', month: 'long' }).format(
+    new Date(`${clave}T12:00:00Z`),
+  )
+}
+
 // Misma idea que ESTADOS en el panel del agente: el color nunca va solo, cada
 // estado lleva icono y etiqueta.
 export const ESTADOS_CITA: Record<EstadoCita, { etiqueta: string; chip: string; Icono: LucideIcon }> = {
@@ -47,6 +86,8 @@ export const ESTADOS_CITA: Record<EstadoCita, { etiqueta: string; chip: string; 
   confirmada: { etiqueta: 'Confirmada', chip: 'bg-emerald-50 text-emerald-800 ring-emerald-200', Icono: CircleCheck },
   rechazada: { etiqueta: 'Rechazada', chip: 'bg-red-50 text-red-800 ring-red-200', Icono: CircleX },
   cancelada: { etiqueta: 'Cancelada', chip: 'bg-slate-100 text-slate-600 ring-slate-200', Icono: Ban },
+  atendida: { etiqueta: 'Atendida', chip: 'bg-teal-50 text-teal-800 ring-teal-200', Icono: UserCheck },
+  no_asistio: { etiqueta: 'No asistió', chip: 'bg-orange-50 text-orange-800 ring-orange-200', Icono: UserX },
 }
 
 // Lucide no trae muela: se dibuja aquí con el mismo trazo de sus iconos.

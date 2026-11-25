@@ -23,8 +23,8 @@ npm run dev:all      # paciente:5173, médico:5174, admin:5175
 
 ## Usuarios de prueba
 
-Contraseña para todos: `123456`.
-Pregunta de seguridad para recuperar la contraseña: «¿En qué ciudad naciste?» → `medellin`.
+Contraseña para todos: `123456` (cuentas de demo, anteriores a los requisitos de contraseña; cámbiala desde ⚙️ Ajustes si quieres probarlos).
+Solo los **pacientes** pueden recuperar la contraseña con su pregunta de seguridad. Los pacientes de prueba tienen «¿En qué ciudad naciste?» → `medellin`. Médicos y admin ya no tienen pregunta: su contraseña se restablece desde el dashboard de Supabase.
 
 | Rol | Correo | Nombre |
 |---|---|---|
@@ -40,11 +40,44 @@ Hay cuatro sedes: Clínica Central (Medellín), Clínica Norte (Bello), Clínica
 
 ## Flujo para la demo
 
-1. **Paciente:** elige una especialidad, filtra por ciudad o sede, elige un día y una hora y solicita la cita. Queda *Pendiente*.
-2. **Médico:** la ve aparecer en vivo y la **acepta** o la **rechaza**, con un mensaje opcional. El paciente ve el cambio sin recargar.
-3. **Médico:** usa **Reportar retraso / novedad** (10 min, 15 min, no disponible hoy u otra).
-4. **Admin:** recibe la novedad en su bandeja y la **aprueba**. En ese momento les sale la alerta 🚨 a los pacientes que tienen cita con ese médico.
-5. **Admin:** en *Médicos y sedes* cambia la sede de un médico o le **genera horarios** nuevos.
+`npm run dev:all` y tres ventanas: paciente `http://localhost:5173`, médico `:5174`, admin `:5175`
+(cada puerto guarda su propia sesión). El mapa solo funciona desde esos tres puertos.
+
+**Preparación (antes de presentar):**
+- Admin → *Médicos y sedes* → **Generar horarios** si a algún médico le queda poca agenda.
+- Ya cargados: datos de prueba para las estadísticas ([supabase/semillas/](supabase/semillas/)); se deshacen con `2026-11-25_citas_demo_deshacer.sql`.
+
+**Guion (unos 10 minutos):**
+
+1. **Paciente** (`paciente2@test.com`, Juan): busca *Medicina general* y pide una cita con la **Dra. Laura Gómez para hoy o mañana**. Queda *Pendiente*.
+   Reglas: máximo **1 cita activa por especialidad** y **3 en total**, nunca dos a la misma hora.
+2. **Médico** (`medico@test.com`): la solicitud entra en vivo. La **acepta** con un mensaje; el paciente lo ve sin recargar. (Si la rechazara, el horario volvería a quedar libre.)
+3. **Médico:** arriba aparecen las citas **Por cerrar** (confirmadas cuya hora ya pasó): marca una como **Atendida** o **No asistió**.
+4. **Médico:** **Reportar novedad** → *15 min* → día de la cita de Juan.
+5. **Admin** (`admin@test.com`): la novedad entra en la bandeja con su tipo y su día. La **aprueba** (o la rechaza escribiendo el motivo, que el médico ve al instante).
+6. **Paciente:** le sale el aviso 🚨 con la **hora estimada** («podría empezar hacia las 10:15») y la cita queda marcada. Un paciente con cita otro día no ve nada.
+7. **Paciente:** *Ver detalles* de la cita → mapa de la sede, **Cómo llegar**, **Reprogramar** (todo o nada) o **Cancelar** (hasta 2 h antes). El botón «atrás» del navegador funciona entre pantallas.
+8. **Admin:** pestaña **Estadísticas** → tasa de confirmación, respuesta media del médico, inasistencia, ocupación por especialidad y sede, demanda por hora. Cada gráfico tiene «Ver como tabla».
+9. **Extra si hay tiempo:**
+   - Médico reporta **No disponible** → admin la aprueba y pulsa **Cancelar citas de ese día** → los pacientes ven su cita cancelada.
+   - Cualquier rol: ⚙️ **Ajustes** (nombre, contraseña y, en pacientes, pregunta de seguridad).
+   - Admin → *Médicos y sedes*: cambiar la sede de un médico o generar horarios.
+
+## Pruebas
+
+```
+cd app
+npm test          # pruebas de la lógica de src/lib (Vitest)
+npm run lint      # oxlint
+npx tsc -b        # tipos
+```
+
+La base de datos está versionada en [supabase/](supabase/): migraciones, foto
+completa del esquema (`schema.sql`, `policies.sql`) y cómo regenerarla.
+
+## Auditoría y planes
+
+La auditoría del proyecto, el análisis de reutilización de Buses Metro y los planes de acción están en [docs/auditoria/](docs/auditoria/).
 
 ## Qué se recicló de Buses Metro
 
